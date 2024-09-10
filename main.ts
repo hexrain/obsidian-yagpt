@@ -1,17 +1,77 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, MarkdownView, Modal, Plugin, PluginSettingTab, Setting, requestUrl, RequestUrlParam } from 'obsidian';
+
 
 // Remember to rename these classes and interfaces!
 
-interface MyPluginSettings {
-	mySetting: string;
+interface YaGPTPluginSettings {
+	bearerToken: string;
+	folderId: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: YaGPTPluginSettings = {
+	bearerToken: 'default',
+	folderId: 'some folder id'
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class YaGPTPlugin extends Plugin {
+	settings: YaGPTPluginSettings;
+
+
+	getClassifyPrompt() : string {
+		return "Пользователь ведет заметки в стиле zettelkasten. Определи, к какому типу относится заметка, которую пришлет пользоватеель. Fleeting note, permanent note, literature note. ответь только типом заметки"
+	}
+
+
+	async readActiveFile() : Promise<string> {
+		let activeFile = this.app.workspace.getActiveFile()
+		if (activeFile == null) {
+			return "empty file"
+		} else {
+			return await this.app.vault.read(activeFile);
+		}
+	}
+
+	async getBody() : Promise<string> {
+		let params = {
+			modelUri: `gpt://${this.settings.folderId}/yandexgpt-lite`,
+			completionOptions: {
+				stream: false,
+				temperature: 0.1,
+				maxTokens: "1000"
+			},
+			messages: [
+				{
+					role: "system",
+					text: this.getClassifyPrompt()
+				}, 
+				{
+					role: "user",
+					text: await this.readActiveFile()
+				}
+			]
+		}
+
+		return JSON.stringify(params)
+	}
+
+	async classifyNote() {
+		let params: RequestUrlParam = {
+			method: "POST",
+			url: "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+			body: await this.getBody(),
+			headers: {
+				"Accept" : "application/json",
+				"Authorization": `Bearer ${this.settings.bearerToken}`
+			}
+		};
+
+		let response = await requestUrl(params);
+		console.log(response.text)
+		
+
+		new SampleModal(this.app, response.json.result.alternatives[0].message.text).open();
+
+	}
 
 	async onload() {
 		await this.loadSettings();
@@ -19,36 +79,14 @@ export default class MyPlugin extends Plugin {
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
 			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+			this.classifyNote();
 		});
 		// Perform additional things with the ribbon
 		ribbonIconEl.addClass('my-plugin-ribbon-class');
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
+			id: 'obsidian-yagpt-classify-note',
+			name: 'Classify Note',
 			checkCallback: (checking: boolean) => {
 				// Conditions to check
 				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -56,7 +94,7 @@ export default class MyPlugin extends Plugin {
 					// If checking is true, we're simply "checking" if the command can be run.
 					// If checking is false, then we want to actually perform the operation.
 					if (!checking) {
-						new SampleModal(this.app).open();
+						this.classifyNote();
 					}
 
 					// This command will only show up in Command Palette when the check function returns true
@@ -65,17 +103,9 @@ export default class MyPlugin extends Plugin {
 			}
 		});
 
+
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 	}
 
 	onunload() {
@@ -92,42 +122,57 @@ export default class MyPlugin extends Plugin {
 }
 
 class SampleModal extends Modal {
-	constructor(app: App) {
+	text: string;
+
+	constructor(app: App, text: string) {
 		super(app);
+		this.text = text;
 	}
 
 	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
+		const { contentEl } = this;
+		contentEl.setText(this.text);
 	}
 
 	onClose() {
-		const {contentEl} = this;
+		const { contentEl } = this;
 		contentEl.empty();
 	}
 }
 
 class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+	plugin: YaGPTPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: YaGPTPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
 
 	display(): void {
-		const {containerEl} = this;
+		const { containerEl } = this;
 
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
+			.setName('Bearer Token')
+			.setDesc('Debug setting before auth is implemented')
 			.addText(text => text
 				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+				.setValue(this.plugin.settings.bearerToken)
 				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+					this.plugin.settings.bearerToken = value;
+					await this.plugin.saveSettings();
+				}));
+
+
+		new Setting(containerEl)
+			.setName('Folder Id')
+			.setDesc('Folder Id')
+			.addText(text => text
+				.setPlaceholder('Enter your secret')
+				.setValue(this.plugin.settings.folderId)
+				.onChange(async (value) => {
+					this.plugin.settings.folderId = value;
 					await this.plugin.saveSettings();
 				}));
 	}
