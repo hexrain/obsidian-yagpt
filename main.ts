@@ -17,12 +17,12 @@ export default class YaGPTPlugin extends Plugin {
 	settings: YaGPTPluginSettings;
 
 
-	getClassifyPrompt() : string {
-		return "Пользователь ведет заметки в стиле zettelkasten. Определи, к какому типу относится заметка, которую пришлет пользоватеель. Fleeting note, permanent note, literature note. ответь только типом заметки"
+	getClassifyPrompt(): string {
+		return "Пользователь ведет заметки в стиле zettelkasten. Определи, к какому типу относится заметка, которую пришлет пользоватеель. Fleeting note, Permanent note, Literature note. ответь только типом заметки"
 	}
 
 
-	async readActiveFile() : Promise<string> {
+	async readActiveFile(): Promise<string> {
 		let activeFile = this.app.workspace.getActiveFile()
 		if (activeFile == null) {
 			return "empty file"
@@ -31,7 +31,7 @@ export default class YaGPTPlugin extends Plugin {
 		}
 	}
 
-	async getBody() : Promise<string> {
+	async getBody(): Promise<string> {
 		let params = {
 			modelUri: `gpt://${this.settings.folderId}/yandexgpt-lite`,
 			completionOptions: {
@@ -43,7 +43,7 @@ export default class YaGPTPlugin extends Plugin {
 				{
 					role: "system",
 					text: this.getClassifyPrompt()
-				}, 
+				},
 				{
 					role: "user",
 					text: await this.readActiveFile()
@@ -60,14 +60,14 @@ export default class YaGPTPlugin extends Plugin {
 			url: "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
 			body: await this.getBody(),
 			headers: {
-				"Accept" : "application/json",
+				"Accept": "application/json",
 				"Authorization": `Bearer ${this.settings.bearerToken}`
 			}
 		};
 
 		let response = await requestUrl(params);
 		console.log(response.text)
-		
+
 
 		new SampleModal(this.app, response.json.result.alternatives[0].message.text).open();
 
