@@ -1,4 +1,4 @@
-import { App, MarkdownView, Modal, Plugin, PluginSettingTab, Setting, requestUrl, RequestUrlParam } from 'obsidian';
+import { App, MarkdownView, Modal, Plugin, PluginSettingTab, Setting, requestUrl, RequestUrlParam, RequestUrlResponse, TFile } from 'obsidian';
 
 
 // Remember to rename these classes and interfaces!
@@ -13,25 +13,39 @@ const DEFAULT_SETTINGS: YaGPTPluginSettings = {
 	folderId: 'some folder id'
 }
 
+enum ClassificationResult {
+	Unknown = 0,
+	FleetingNote,
+	PermanentNote,
+	LiteratureNote,
+};
+
+enum Errors {
+	AuthError = 0,
+}
+
 export default class YaGPTPlugin extends Plugin {
 	settings: YaGPTPluginSettings;
 
 
 	getClassifyPrompt(): string {
-		return "Пользователь ведет заметки в стиле zettelkasten. Определи, к какому типу относится заметка, которую пришлет пользоватеель. Fleeting note, Permanent note, Literature note. ответь только типом заметки"
+		return "Пользователь ведет заметки в стиле zettelkasten. Определи, к какому типу относится заметка, которую пришлет пользоватеель. Fleeting note, Permanent note, Literature note. ответь только типом заметки, не используя никакие другие символы"
 	}
 
 
-	async readActiveFile(): Promise<string> {
-		let activeFile = this.app.workspace.getActiveFile()
+	async readActiveFile(file: TFile): Promise<string> {
+		let activeFile = file
 		if (activeFile == null) {
 			return "empty file"
 		} else {
-			return await this.app.vault.read(activeFile);
+			let res = await this.app.vault.read(activeFile);
+			console.log(res)
+			return res;
 		}
+
 	}
 
-	async getBody(): Promise<string> {
+	async getBody(file: TFile): Promise<string> {
 		let params = {
 			modelUri: `gpt://${this.settings.folderId}/yandexgpt-lite`,
 			completionOptions: {
@@ -46,7 +60,7 @@ export default class YaGPTPlugin extends Plugin {
 				},
 				{
 					role: "user",
-					text: await this.readActiveFile()
+					text: await this.readActiveFile(file)
 				}
 			]
 		}
@@ -54,23 +68,77 @@ export default class YaGPTPlugin extends Plugin {
 		return JSON.stringify(params)
 	}
 
-	async classifyNote() {
+
+
+	classifyNoteWithResponse(response: RequestUrlResponse): ClassificationResult {
+		let alternatives = response.json.result.alternatives;
+		let firstAlternative = alternatives[0];
+		let classificationResult = firstAlternative.message.text;
+
+		let fleetingNoteResponse = "Fleeting note";
+		let permanentNoteResponse = "Permanent note";
+		let literatureNoteResponse = "Literature note";
+
+		if (classificationResult.includes(fleetingNoteResponse)) {
+			return ClassificationResult.FleetingNote;
+		} else if (classificationResult.includes(permanentNoteResponse)) {
+			return ClassificationResult.PermanentNote;
+		} else if (classificationResult.includes(literatureNoteResponse)) {
+			return ClassificationResult.LiteratureNote;
+		}
+		return ClassificationResult.Unknown;
+	}
+
+	async classifyNote(file: TFile) {
 		let params: RequestUrlParam = {
 			method: "POST",
 			url: "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
-			body: await this.getBody(),
+			body: await this.getBody(file),
 			headers: {
 				"Accept": "application/json",
 				"Authorization": `Bearer ${this.settings.bearerToken}`
-			}
+			},
+			throw: false
 		};
 
 		let response = await requestUrl(params);
-		console.log(response.text)
+		if (response.status == 200) {
 
+			console.log(response.text);
 
-		new SampleModal(this.app, response.json.result.alternatives[0].message.text).open();
+			let classificationResult = this.classifyNoteWithResponse(response);
+			if (classificationResult == ClassificationResult.Unknown) {
 
+			} else {
+
+				this.handleClassificationResult(classificationResult, file)
+			}
+		} else {
+			console.log('expected exception');
+
+			if (response.json.error.grpcCode == 16) {
+				console.log(response.text);
+
+				if (response.status == 401) {
+					this.handleAuthException();
+				}
+			} else {
+				console.log('unexpected exception');
+				console.log(response.text);
+
+				throw new Error('Function not implemented.');
+			}
+
+		}
+
+	}
+	handleClassificationResult(classificationResult: ClassificationResult, file: TFile) {
+		this.app.fileManager.processFrontMatter(file, frontmatter => {
+			console.log(file)
+			frontmatter['noteType'] = ClassificationResult[classificationResult];
+		});
+
+		new SampleModal(this.app, ClassificationResult[classificationResult]).open();
 	}
 
 	async onload() {
@@ -79,7 +147,7 @@ export default class YaGPTPlugin extends Plugin {
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
 			// Called when the user clicks the icon.
-			this.classifyNote();
+			this.classifyActiveNote();
 		});
 		// Perform additional things with the ribbon
 		ribbonIconEl.addClass('my-plugin-ribbon-class');
@@ -94,7 +162,7 @@ export default class YaGPTPlugin extends Plugin {
 					// If checking is true, we're simply "checking" if the command can be run.
 					// If checking is false, then we want to actually perform the operation.
 					if (!checking) {
-						this.classifyNote();
+						this.classifyActiveNote();
 					}
 
 					// This command will only show up in Command Palette when the check function returns true
@@ -108,6 +176,15 @@ export default class YaGPTPlugin extends Plugin {
 		this.addSettingTab(new SampleSettingTab(this.app, this));
 	}
 
+	private classifyActiveNote() {
+		let activeFile = this.app.workspace.getActiveFile();
+		if (activeFile) {
+			this.classifyNote(activeFile);
+		} else {
+			handleNoActiveFileError();
+		}
+	}
+
 	onunload() {
 
 	}
@@ -118,6 +195,11 @@ export default class YaGPTPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+
+	handleAuthException() {
+		throw new Error('Function not implemented.');
 	}
 }
 
@@ -176,4 +258,11 @@ class SampleSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 	}
+
+
 }
+function handleNoActiveFileError() {
+	throw new Error('Function not implemented.');
+}
+
+
